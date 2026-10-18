@@ -1,0 +1,50 @@
+<!doctype html><meta charset="utf-8"><title>Balance test</title>
+<script src="../js/data.js"></script><script src="../js/engine.js"></script>
+<pre id="out">running…</pre>
+<script>
+function setup(tier, name, ai) {
+  const sq = KM.genSquad(tier);
+  const f = KM.FORMATIONS['4-4-2'];
+  const used = new Set(), players = [];
+  for (const s of f) { const p = sq.filter(p => p.pos === s[0] && !used.has(p)).sort((a,b)=>KM.ovr(b)-KM.ovr(a))[0]; used.add(p); players.push(p); }
+  const bench = sq.filter(p => !used.has(p)).slice(0, 7);
+  [...players, ...bench].forEach(p => p.ovr = KM.ovr(p));
+  return { name, short: name, kit: ['#f00','#fff'], gkKit: ['#ff0','#000'], tactic: { formation: '4-4-2', mentality: 0, press: 1 }, players, bench, aiSubs: ai };
+}
+function run(n, tA, tB) {
+  const agg = { g: [0,0], shots: [0,0], onT: [0,0], passes: [0,0], passOk: [0,0], fouls: [0,0], corners: [0,0], poss: [0,0], yel: 0, red: 0, w: [0,0,0], ms: 0, rating: [] };
+  const t0 = performance.now();
+  for (let i = 0; i < n; i++) {
+    const m = new KM.Match(setup(tA, 'A', true), setup(tB, 'B', true));
+    m.runToEnd();
+    const r = m.result();
+    agg.g[0] += r.hg; agg.g[1] += r.ag;
+    agg.w[r.hg > r.ag ? 0 : r.hg === r.ag ? 1 : 2]++;
+    for (let k = 0; k < 2; k++) { const s = r.stats[k]; agg.shots[k] += s.shots; agg.onT[k] += s.onT; agg.passes[k] += s.passes; agg.passOk[k] += s.passOk; agg.fouls[k] += s.fouls; agg.corners[k] += s.corners; agg.poss[k] += s.possPct; agg.yel += s.yellows; agg.red += s.reds; }
+    r.players[0].concat(r.players[1]).forEach(p => agg.rating.push(p.rating));
+  }
+  agg.ms = (performance.now() - t0) / n;
+  const f = (a) => a.map(x => (x / n).toFixed(2)).join(' / ');
+  const rs = agg.rating.sort((a,b)=>a-b);
+  return `tiers ${tA} vs ${tB}  n=${n}  ${agg.ms.toFixed(1)}ms/match
+ goals ${f(agg.g)}  W/D/L ${agg.w.join('/')}
+ shots ${f(agg.shots)}  onT ${f(agg.onT)}
+ passes ${f(agg.passes)}  ok ${f(agg.passOk)}  (${(100*(agg.passOk[0]+agg.passOk[1])/(agg.passes[0]+agg.passes[1])).toFixed(0)}%)
+ fouls ${f(agg.fouls)} corners ${f(agg.corners)} poss ${f(agg.poss)} yel ${(agg.yel/n).toFixed(2)} red ${(agg.red/n).toFixed(2)}
+ rating p10 ${rs[Math.floor(rs.length*0.1)]} med ${rs[Math.floor(rs.length*0.5)]} p90 ${rs[Math.floor(rs.length*0.9)]}`;
+}
+window.runAll = function () {
+  return [run(40, 70, 70), run(40, 77, 61)].join('\n\n');
+};
+document.getElementById('out').textContent = runAll();
+</script>
+<script>
+window.zones = function (n) {
+  const z = [0,0,0]; let tot = 0, shotsU = [];
+  for (let i = 0; i < n; i++) {
+    const m = new KM.Match(setup(70,'A',true), setup(70,'B',true));
+    while (!m.finished) { m.step(); if (m.mode !== 'play') continue; const b = m.ball; const tm = m.teams[b.owner ? b.owner.team : b.lastTeam]; const u = m.U(tm, b.x); z[u < 35 ? 0 : u < 70 ? 1 : 2]++; tot++; }
+  }
+  return z.map(v => (100 * v / tot).toFixed(1) + '%').join(' / ');
+};
+</script>
