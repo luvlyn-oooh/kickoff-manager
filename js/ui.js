@@ -80,6 +80,7 @@
             <button class="btn ${G.hasSave() ? '' : 'primary'} big" data-act="new">새 게임</button>
             ${installHtml()}
           </div>
+          <a class="cup-link" href="cup/index.html">🃏 신작 <b>언더독 컵</b> — 카드로 지휘하는 로그라이크 축구 ▶</a>
         </div>
       </div>`;
     startDemo();

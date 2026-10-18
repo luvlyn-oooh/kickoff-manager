@@ -59,3 +59,40 @@ draw_icon(512, 0.2, False).save(os.path.join(OUT, 'icon-maskable-512.png'))
 draw_icon(180, 0.12, False).save(os.path.join(OUT, 'apple-touch-icon.png'))
 draw_icon(64, 0.06, True).save(os.path.join(OUT, 'favicon.png'))
 print('icons written to', os.path.abspath(OUT))
+
+
+# ---------- 언더독 컵 아이콘: 부채꼴로 펼친 카드 3장 + 공 ----------
+def draw_cup_icon(size, pad_ratio, rounded):
+    S = size * 4
+    img = Image.new('RGBA', (S, S), (0, 0, 0, 0) if rounded else BG + (255,))
+    d = ImageDraw.Draw(img)
+    if rounded:
+        d.rounded_rectangle([0, 0, S - 1, S - 1], radius=int(S * 0.22), fill=BG + (255,))
+    inner = S * (1 - 2 * pad_ratio)
+    cw, ch = int(inner * 0.42), int(inner * 0.6)
+    colors = [(56, 189, 248), (245, 158, 11), (163, 230, 53)]
+    for angle, col in zip([-22, 22, 0], colors):
+        card = Image.new('RGBA', (cw, ch), (0, 0, 0, 0))
+        cd = ImageDraw.Draw(card)
+        cd.rounded_rectangle([0, 0, cw - 1, ch - 1], radius=int(cw * 0.14), fill=(27, 39, 66, 255), outline=col + (255,), width=max(4, cw // 16))
+        rot = card.rotate(angle, resample=Image.BICUBIC, expand=True)
+        cx = S // 2 + int(inner * 0.18 * math.sin(math.radians(angle)))
+        cy = int(S * 0.53)
+        img.alpha_composite(rot, (cx - rot.width // 2, cy - rot.height // 2))
+    cx, cy, br = S // 2, int(S * 0.5), int(inner * 0.12)
+    d = ImageDraw.Draw(img)
+    d.ellipse([cx - br, cy - br, cx + br, cy + br], fill=(255, 255, 255, 255), outline=(15, 23, 42, 255), width=max(2, br // 10))
+    pr = br * 0.42
+    pts = [(cx + pr * math.cos(math.radians(-90 + k * 72)), cy + pr * math.sin(math.radians(-90 + k * 72))) for k in range(5)]
+    d.polygon(pts, fill=(15, 23, 42, 255))
+    return img.resize((size, size), Image.LANCZOS)
+
+
+CUP = os.path.join(os.path.dirname(__file__), '..', 'cup', 'icons')
+os.makedirs(CUP, exist_ok=True)
+draw_cup_icon(192, 0.1, True).save(os.path.join(CUP, 'icon-192.png'))
+draw_cup_icon(512, 0.1, True).save(os.path.join(CUP, 'icon-512.png'))
+draw_cup_icon(512, 0.2, False).save(os.path.join(CUP, 'icon-maskable-512.png'))
+draw_cup_icon(180, 0.12, False).save(os.path.join(CUP, 'apple-touch-icon.png'))
+draw_cup_icon(64, 0.06, True).save(os.path.join(CUP, 'favicon.png'))
+print('cup icons written to', os.path.abspath(CUP))

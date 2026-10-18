@@ -1,0 +1,61 @@
+<!doctype html><meta charset="utf-8"><title>Cup balance</title>
+<script src="../js/data.js"></script><script src="../js/engine.js"></script><script src="../js/render.js"></script>
+<script src="../cup/cards.js"></script><script src="../cup/run.js"></script>
+<pre id="out">running…</pre>
+<script>
+// 언더독 컵 밸런스 측정: 카드 없이 / 간단한 규칙으로 카드 사용 시 승률 비교
+const C = KM.Cup;
+function userSetup(r) {
+  const prep = (p) => Object.assign({}, p, { ovr: KM.ovr(p) });
+  return { name: r.club.name, short: r.club.short, kit: r.club.kit, gkKit: r.club.gk, tactic: { formation: r.formation, mentality: 0, press: 1 }, players: r.starters().map(prep), bench: r.bench().map(prep), aiSubs: true, mods: { finish: C.CUP_FINISH } };
+}
+function sim(run, opp, cards) {
+  const m = new KM.Match(userSetup(run), C.oppSetup(opp, false), { length: C.MATCH_LENGTH });
+  let draw = C.shuffle(run.deck.map((c) => ({ ...c }))), disc = [], hand = [];
+  const dr = () => { if (!draw.length) { draw = C.shuffle(disc); disc = []; } if (draw.length) hand.push(draw.pop()); };
+  for (let i = 0; i < 4; i++) dr();
+  let energy = 2, next = 9;
+  const moves = C.shuffle(C.BOSS_MOVES.slice()).slice(0, opp.moves).map((mv, i) => ({ ...mv, at: 30 + i * 20, done: false }));
+  while (!m.finished) {
+    m.step();
+    const gm = m.gameSec() / 60;
+    while (gm >= next) { next += 9; energy = Math.min(6, energy + 1); }
+    for (const mv of moves) if (!mv.done && gm >= mv.at && m.canAct()) { mv.done = true; m.addEffect(1, { label: mv.name, min: mv.min, mods: mv.mods }); }
+    if (cards && m.mode === 'play' && Math.random() < 0.02) {
+      const lead = m.teams[0].score - m.teams[1].score;
+      let i = hand.findIndex((c) => C.cardCost(c) <= energy && (lead > 0 ? C.CARDS[c.id].kind !== 'atk' : C.CARDS[c.id].kind !== 'def'));
+      if (i < 0) i = hand.findIndex((c) => C.cardCost(c) <= energy);
+      if (i >= 0) {
+        const c = hand[i], def = C.CARDS[c.id];
+        const ok = def.play({ m, side: 0, card: def, gainEnergy: (n) => { energy += n; } }, !!c.up);
+        if (ok !== false) { energy -= C.cardCost(c); hand.splice(i, 1); disc.push(c); dr(); }
+      }
+    }
+  }
+  return { gf: m.teams[0].score, ga: m.teams[1].score };
+}
+function evalv(run, kind, N) {
+  const res = {};
+  for (const cards of [false, true]) {
+    let w = 0, d = 0, l = 0, gf = 0, ga = 0;
+    for (let k = 0; k < N; k++) { const r = sim(run, run.makeOpponent(kind), cards); gf += r.gf; ga += r.ga; if (r.gf > r.ga) w++; else if (r.gf === r.ga) d++; else l++; }
+    res[cards ? 'cards' : 'none'] = `W${w} D${d} L${l} (${(gf / N).toFixed(1)}-${(ga / N).toFixed(1)})`;
+  }
+  return res;
+}
+window.runAll = function (N = 30) {
+  const out = {};
+  const run = C.Run.create('attack');
+  out.s1 = { our: Math.round(run.strength()), normal: evalv(run, 'match', N), boss: evalv(run, 'boss', N) };
+  run.stage = 1; run.step = 2;
+  for (const pos of ['FW', 'MF', 'DF']) run.recruit(pos, run.stageTier() + 5);
+  ['counter', 'wing', 'halfspace'].forEach((id) => run.addCard(id)); run.upgradeRandom(); run.autoLineup();
+  out.s2 = { our: Math.round(run.strength()), normal: evalv(run, 'match', N), boss: evalv(run, 'boss', N) };
+  run.stage = 2; run.step = 2;
+  for (const pos of ['FW', 'MF', 'DF', 'MF']) run.recruit(pos, run.stageTier() + 5);
+  ['total', 'ace', 'crowd'].forEach((id) => run.addCard(id)); run.upgradeRandom(); run.upgradeRandom(); run.autoLineup();
+  out.s3 = { our: Math.round(run.strength()), normal: evalv(run, 'match', N), boss: evalv(run, 'boss', N) };
+  return out;
+};
+document.getElementById('out').textContent = JSON.stringify(runAll(), null, 1);
+</script>

@@ -1,10 +1,14 @@
 /* 킥오프 매니저 - 오프라인 캐시 (파일을 바꾸면 VERSION을 올리세요) */
-const VERSION = 'kickoff-v4';
+const VERSION = 'kickoff-v5';
 const SHELL = [
   './', './index.html', './manifest.webmanifest',
   './css/style.css',
   './js/data.js', './js/engine.js', './js/game.js', './js/render.js', './js/ui.js',
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png', './icons/favicon.png',
+  // 언더독 컵
+  './cup/', './cup/index.html', './cup/manifest.webmanifest', './cup/cup.css',
+  './cup/cards.js', './cup/run.js', './cup/ui.js',
+  './cup/icons/icon-192.png', './cup/icons/icon-512.png', './cup/icons/apple-touch-icon.png', './cup/icons/favicon.png',
 ];
 
 self.addEventListener('install', (e) => {
@@ -29,7 +33,7 @@ self.addEventListener('fetch', (e) => {
         const copy = res.clone();
         caches.open(VERSION).then((c) => c.put(req, copy));
         return res;
-      }).catch(() => caches.match(req, { ignoreSearch: true }).then((r) => r || caches.match('./index.html'))),
+      }).catch(() => caches.match(req, { ignoreSearch: true }).then((r) => r || caches.match(url.pathname.includes('/cup/') ? './cup/index.html' : './index.html'))),
     );
     return;
   }

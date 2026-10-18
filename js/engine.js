@@ -24,6 +24,25 @@
   }
   const J = (w, a, b) => KM.josa(w, a, b);
 
+  // 카드/특성 효과용 모디파이어. 기본값은 모두 '효과 없음'
+  const MUL_KEYS = ['all', 'sho', 'pas', 'dri', 'def', 'gk', 'spd', 'finish', 'concede', 'passErr', 'foul', 'drain'];
+  const ADD_KEYS = ['desire', 'range', 'prog', 'box', 'tackle', 'line', 'intercept', 'counter', 'mfRun'];
+  function neutralMods() {
+    const m = { press: -1, boost: {} };
+    for (const k of MUL_KEYS) m[k] = 1;
+    for (const k of ADD_KEYS) m[k] = 0;
+    return m;
+  }
+  function mergeMods(m, add) {
+    if (!add) return m;
+    for (const k of MUL_KEYS) if (add[k] != null) m[k] *= add[k];
+    for (const k of ADD_KEYS) if (add[k] != null) m[k] += add[k];
+    if (add.press != null) m.press = Math.max(m.press, add.press);
+    if (add.boost) for (const id in add.boost) m.boost[id] = (m.boost[id] || 1) * add.boost[id];
+    return m;
+  }
+  KM.neutralMods = neutralMods;
+
   const CORNER_ATK = [[95, 30], [97, 37], [93, 39], [99, 33], [91, 27], [88, 44]];
   const CORNER_DEF = [[3, 31], [4, 38], [7, 33], [8, 27], [6, 41], [10, 36], [12, 30], [12, 42], [16, 34]];
 
@@ -34,6 +53,10 @@
      */
     constructor(home, away, opts = {}) {
       this.onEvent = opts.onEvent || null;
+      this.T = opts.length || MATCH_T;
+      this.HT = this.T / 2;
+      this.effects = [];
+      this._nextExpiry = Infinity;
       this.t = 0;
       this.half = 1;
       this.finished = false;
@@ -58,6 +81,7 @@
         score: 0, subsLeft: 5, aiSubs: !!s.aiSubs, aiSubsDone: 0,
         onPitch: [], bench: (s.bench || []).slice(), used: [], sentOff: [], lastPasser: null,
         st: { poss: 0, shots: 0, onT: 0, passes: 0, passOk: 0, fouls: 0, corners: 0, yellows: 0, reds: 0, tackles: 0, saves: 0 },
+        traits: s.mods || null, mods: mergeMods(neutralMods(), s.mods), autoSaves: 0, counterUntil: -1,
       };
       const form = KM.FORMATIONS[tm.tactic.formation] || KM.FORMATIONS['4-4-2'];
       s.players.forEach((pd, i) => tm.onPitch.push(this._mkPlayer(pd, tm, form[i])));
@@ -81,8 +105,15 @@
     // ---------- 유틸 ----------
     U(tm, x) { return tm.dir === 1 ? x : L - x; }
     V(tm, y) { return tm.dir === 1 ? y : W - y; }
-    eff(p, k) { return p.a[k] * p.fit * (0.72 + 0.28 * p.energy / 100); }
-    maxSpd(p) { return (5.4 + p.a.pac * 0.03) * (0.7 + 0.3 * p.energy / 100); }
+    eff(p, k) {
+      const m = this.teams[p.team].mods;
+      return p.a[k] * p.fit * (0.72 + 0.28 * p.energy / 100) * m.all * (m[k] || 1) * (m.boost[p.id] || 1);
+    }
+    maxSpd(p) {
+      const m = this.teams[p.team].mods;
+      return (5.4 + p.a.pac * 0.03) * (0.7 + 0.3 * p.energy / 100) * m.spd * (m.boost[p.id] ? Math.min(1.12, m.boost[p.id]) : 1);
+    }
+    pressOf(tm) { return Math.max(tm.tactic.press, tm.mods.press); }
     gkOf(tm) { return tm.onPitch.find((p) => p.role === 'GK') || null; }
     nearestOpp(p) {
       const opp = this.teams[1 - p.team].onPitch;
@@ -90,7 +121,7 @@
       for (const o of opp) { const d = hyp(o.x - p.x, o.y - p.y); if (d < bd) { bd = d; best = o; } }
       return [bd, best];
     }
-    gameSec() { return this.t / MATCH_T * 5400; }
+    gameSec() { return this.t / this.T * 5400; }
     minute() {
       const m = Math.floor(this.gameSec() / 60) + 1;
       return this.half === 1 ? Math.min(m, 45) : Math.min(Math.max(m, 46), 90);
@@ -143,6 +174,45 @@
       return true;
     }
 
+    /** 카드 효과 추가. eff = { label, icon, mods, min(지속 경기 시간, 분) } */
+    addEffect(teamIdx, eff) {
+      const e = Object.assign({ team: teamIdx, until: this.t + (eff.min || 10) / 90 * this.T }, eff);
+      this.effects.push(e);
+      this._recomputeMods();
+      return e;
+    }
+    _recomputeMods() {
+      this._nextExpiry = Infinity;
+      this.effects = this.effects.filter((e) => e.until > this.t);
+      for (const tm of this.teams) tm.mods = mergeMods(neutralMods(), tm.traits);
+      for (const e of this.effects) {
+        mergeMods(this.teams[e.team].mods, e.mods);
+        if (e.until < this._nextExpiry) this._nextExpiry = e.until;
+      }
+    }
+    canAct() { return !this.finished && (this.mode === 'play' || this.mode === 'restart') && !this.ball.shot; }
+    bestBy(teamIdx, k) {
+      let best = null;
+      for (const p of this.teams[teamIdx].onPitch) if (p.role !== 'GK' && (!best || p.a[k] > best.a[k])) best = p;
+      return best;
+    }
+    awardSetPiece(teamIdx, type) {
+      if (!this.canAct()) return false;
+      const tm = this.teams[teamIdx];
+      const taker = this.bestBy(teamIdx, 'sho');
+      if (type === 'penalty') {
+        this._restart('penalty', teamIdx, this.U(tm, L - 11), this.V(tm, CY), taker);
+      } else {
+        const u = rnd(80, 85), v = CY + rnd(-9, 9);
+        this._restart('free', teamIdx, this.U(tm, u), this.V(tm, v), taker);
+        this.restart.direct = true;
+      }
+      return true;
+    }
+    restoreEnergy(teamIdx, amount) {
+      for (const p of this.teams[teamIdx].onPitch) p.energy = Math.min(100, p.energy + amount);
+    }
+
     advance(simSec) {
       const n = Math.round(simSec / DT);
       for (let i = 0; i < n && !this.finished; i++) this.step();
@@ -157,6 +227,7 @@
     step() {
       if (this.finished) return;
       if (this.mode !== 'halftime') this.t += DT;
+      if (this.t >= this._nextExpiry) this._recomputeMods();
       for (const p of this.all) {
         if (p.kickCd > 0) p.kickCd -= DT;
         if (p.tackleCd > 0) p.tackleCd -= DT;
@@ -171,8 +242,8 @@
       this._aiSubs();
       const penPending = this.mode === 'restart' && this.restart && this.restart.type === 'penalty';
       if ((this.mode === 'play' || this.mode === 'restart') && !this.ball.shot && !penPending) {
-        if (this.half === 1 && this.t >= HALF_T) this._startHalftime();
-        else if (this.half === 2 && this.t >= MATCH_T) this._finish();
+        if (this.half === 1 && this.t >= this.HT) this._startHalftime();
+        else if (this.half === 2 && this.t >= this.T) this._finish();
       }
     }
 
@@ -260,7 +331,7 @@
       this.timer -= DT;
       if (this.timer <= 0) {
         this.half = 2;
-        this.t = Math.max(this.t, HALF_T);
+        this.t = Math.max(this.t, this.HT);
         for (const tm of this.teams) {
           tm.dir = -tm.dir;
           for (const p of tm.onPitch) p.energy = Math.min(100, p.energy + 6);
@@ -295,6 +366,7 @@
         }
         const line = Math.max(52.5, m2, bu);
         const ment = tm.tactic.mentality;
+        const counter = inPoss && this.t < tm.counterUntil;
         for (const p of tm.onPitch) {
           if (p === b.owner) continue;
           let u, v;
@@ -304,7 +376,7 @@
             v = CY + (bv - CY) * (bu < 30 ? 0.35 : 0.18);
           } else {
             const sh = (bu - 52.5) * 0.48;
-            u = p.baseU + sh + (inPoss ? 6 : -4) + ment * 4;
+            u = p.baseU + sh + (inPoss ? 6 : -4) + ment * 4 + tm.mods.line;
             const lo = p.role === 'DF' ? 6 : p.role === 'MF' ? 14 : 28;
             u = Math.max(u, lo);
             if (inPoss) {
@@ -312,7 +384,8 @@
               u = Math.min(u, line - 0.7);
               if (p.role === 'FW' && bu > 60) u = Math.min(Math.max(u, bu - 4), line - 0.7);
               // 미드필더 2선 침투
-              if (p.role === 'MF' && bu > 60) u = Math.min(Math.max(u, bu - 9 - Math.abs(p.baseV - CY) * 0.15 + p.runOff), line - 0.7);
+              if (p.role === 'MF' && bu > 60) u = Math.min(Math.max(u, bu - 9 - Math.abs(p.baseV - CY) * 0.15 + p.runOff + tm.mods.mfRun), line - 0.7);
+              if (counter && p.role !== 'DF') { u = Math.min(u + 12, line - 0.7); p.urg = 1; }
             } else {
               v = p.baseV + (bv - CY) * 0.38;
               if (p.role === 'DF') u = Math.min(u, Math.max(bu - 3, 6));
@@ -341,15 +414,15 @@
         const c = b.owner;
         const dtm = this.teams[1 - c.team];
         const du = this.U(dtm, c.x);
-        const press = dtm.tactic.press;
+        const press = this.pressOf(dtm);
         const field = dtm.onPitch.filter((p) => p.role !== 'GK');
         field.sort((a, b2) => hyp(a.x - c.x, a.y - c.y) - hyp(b2.x - c.x, b2.y - c.y));
-        const reach = press === 0 ? 55 : press === 1 ? 72 : 110;
+        const reach = press === 0 ? 55 : press === 1 ? 72 : press === 2 ? 110 : 140;
         const gs = this.U(dtm, 0) === 0 ? -1 : 1; // 자기 골 방향(월드 x)
         for (let i = 0; i < field.length && i < 2; i++) {
           const p = field[i];
           const d = hyp(p.x - c.x, p.y - c.y);
-          const go = i === 0 ? (du < reach || d < 10) : (press >= 1 && d < (press === 2 ? 16 : 9));
+          const go = i === 0 ? (du < reach || d < 10) : (press >= 1 && d < (press >= 3 ? 24 : press === 2 ? 16 : 9));
           if (!go) continue;
           p.tx = c.x + gs * 0.8 + c.vx * 0.25;
           p.ty = c.y + c.vy * 0.25;
@@ -398,7 +471,7 @@
       const owner = this.ball.owner;
       for (const tm of this.teams) {
         const ps = tm.onPitch;
-        const pressCost = 1 + tm.tactic.press * 0.1;
+        const pressCost = (1 + this.pressOf(tm) * 0.1) * tm.mods.drain;
         for (let i = 0; i < ps.length; i++) {
           const p = ps[i];
           const dx = p.tx - p.x, dy = p.ty - p.y, d = hyp(dx, dy);
@@ -449,11 +522,13 @@
       p.forcePass = null;
       p.decideCd = rnd(0.3, 0.7) * (1.15 - this.eff(p, 'pas') / 300);
       const dG = hyp(L - u, CY - v);
+      const mods = tm.mods;
+      const reachG = 32 + mods.range;
 
-      if (!forced && p.role !== 'GK' && u > 72 && dG < 32) {
+      if (!forced && p.role !== 'GK' && u > 72 - mods.range && dG < reachG) {
         const ang = Math.abs(v - CY) / Math.max(dG, 1);
-        let desire = Math.pow(clamp((32 - dG) / 24, 0, 1), 1.7) * (0.5 + this.eff(p, 'sho') / 160) * clamp(1 - ang * 0.7, 0.2, 1);
-        desire += ment * 0.05;
+        let desire = Math.pow(clamp((reachG - dG) / 24, 0, 1), 1.7) * (0.5 + this.eff(p, 'sho') / 160) * clamp(1 - ang * 0.7, 0.2, 1);
+        desire += ment * 0.05 + mods.desire;
         if (dG < 11) desire += 0.3;
         if (Math.random() < desire * 0.65) { this._shoot(p, u, v, dG, press); return; }
       }
@@ -463,6 +538,7 @@
 
       const maxD = forced === 'throw' ? 24 : p.role === 'GK' ? 55 : 26 + this.eff(p, 'pas') * 0.22;
       let best = null, bestS = -99, nearest = null, nd = 1e9;
+      const progW = 0.055 + mods.prog + (this.t < tm.counterUntil ? 0.035 : 0);
       for (const q of tm.onPitch) {
         if (q === p) continue;
         const d = hyp(q.x - p.x, q.y - p.y);
@@ -472,8 +548,8 @@
         const lane = this._laneSafety(p, q, opp);
         const open = clamp(this.nearestOpp(q)[0] / 7, 0, 1);
         const prog = qu - u;
-        let s = (prog > 0 ? prog * 0.055 : prog * 0.09) * (1 + ment * 0.25) + lane * 1.0 + open * 0.7 - d * 0.01;
-        if (qu > 87 && Math.abs(qv - CY) < 19) s += 0.35 + ment * 0.1;
+        let s = (prog > 0 ? prog * progW : prog * 0.09) * (1 + ment * 0.25) + lane * 1.0 + open * 0.7 - d * 0.01;
+        if (qu > 87 && Math.abs(qv - CY) < 19) s += 0.35 + ment * 0.1 + mods.box;
         if (q.role === 'GK') s -= 0.8;
         if (forced === 'corner') s += (qu > 86 && Math.abs(qv - CY) < 19) ? 2 : -2;
         s += rnd(-0.18, 0.18);
@@ -551,7 +627,7 @@
       const lead = clamp(d0 / 18, 0.2, 1.2);
       const tx = q.x + q.vx * lead, ty = q.y + q.vy * lead;
       const [press] = this.nearestOpp(p);
-      const err = (1 - this.eff(p, 'pas') / 110) * 0.16 + (press < 2 ? 0.05 : 0);
+      const err = ((1 - this.eff(p, 'pas') / 110) * 0.16 + (press < 2 ? 0.05 : 0)) * tm.mods.passErr;
       const dx = tx - p.x, dy = ty - p.y, d = hyp(dx, dy);
       const ang = Math.atan2(dy, dx) + gauss() * err;
       const spd = clamp(d * FRIC + 7, 9, 31) * rnd(0.93, 1.07);
@@ -588,10 +664,16 @@
         pGoal = clamp(xg * sf * gf * pf, 0.01, 0.85);
         pOn = clamp(0.3 + this.eff(p, 'sho') / 100 * 0.4 - dG * 0.007, 0.18, 0.8);
       }
+      pGoal = clamp(pGoal * tm.mods.finish * opp.mods.concede, 0.01, pen ? 0.97 : 0.9);
       pOn = Math.max(pOn, pGoal + 0.04);
       const r = Math.random();
       let outcome = r < pGoal ? 'goal' : r < pOn ? 'saved' : 'miss';
       if (outcome === 'saved' && !g) outcome = 'goal';
+      if (outcome === 'goal' && g && opp.autoSaves > 0) {
+        opp.autoSaves--;
+        outcome = 'saved';
+        this._emit('card', `🧤 ${g.name}, 카드 효과로 결정적인 슈팅을 막아냅니다!`, opp.idx);
+      }
       if (!pen && outcome !== 'goal' && Math.random() < (press < 2.5 ? 0.45 : 0.15)) {
         const [, blk] = this.nearestOpp(p);
         if (blk && blk.role !== 'GK') { this._block(p, blk, tm); return; }
@@ -652,7 +734,7 @@
         if (bs < 3.5) pr = 1;
         else if (p === b.intended) pr = clamp(0.82 + this.eff(p, 'dri') / 600 - (bs > 22 ? 0.12 : 0), 0.5, 0.98);
         else if (p.team === b.lastTeam) pr = 0.75;
-        else pr = clamp(0.3 + this.eff(p, 'def') / 100 * 0.5 - (bs > 20 ? 0.12 : 0), 0.1, 0.8);
+        else pr = clamp(0.3 + this.eff(p, 'def') / 100 * 0.5 - (bs > 20 ? 0.12 : 0) + tm.mods.intercept, 0.1, 0.9);
         if (p.role === 'GK' && this.U(tm, b.x) < 16.5 && Math.abs(this.V(tm, b.y) - CY) < 20) pr = Math.max(pr, 0.85);
         if (Math.random() < pr) { this._take(p); return; }
       }
@@ -660,7 +742,10 @@
 
     _take(p) {
       const b = this.ball, tm = this.teams[p.team];
-      if (b.lastTeam !== p.team) { this.teams[0].lastPasser = null; this.teams[1].lastPasser = null; }
+      if (b.lastTeam !== p.team) {
+        this.teams[0].lastPasser = null; this.teams[1].lastPasser = null;
+        if (tm.mods.counter > 0 && this.mode === 'play') tm.counterUntil = this.t + 6 * tm.mods.counter;
+      }
       if (b.passFrom) {
         if (b.passFrom.team === p.team) {
           b.passFrom.s.passOk++; tm.st.passOk++;
@@ -811,7 +896,7 @@
         const u = this.U(tm, tk.x), v = this.V(tm, tk.y);
         if (r.type === 'free') {
           const dG = hyp(L - u, CY - v);
-          if (dG < 28 && Math.abs(v - CY) < 16 && Math.random() < 0.45) {
+          if (dG < 28 && Math.abs(v - CY) < 16 && (r.direct || Math.random() < 0.45)) {
             this._emit('fk', `${tm.name}, 위협적인 위치의 프리킥! ${J(tk.name, '이', '가')} 직접 노립니다.`, tm.idx);
             this._shoot(tk, u, v, dG + 4, 9);
             return;
@@ -859,11 +944,11 @@
         if (hyp(d.x - c.x, d.y - c.y) > 1.5) continue;
         d.tackleCd = rnd(0.9, 1.5);
         const atk = this.eff(c, 'dri'), df = this.eff(d, 'def');
-        const pWin = clamp(0.3 + (df - atk) / 150, 0.1, 0.62);
+        const pWin = clamp(0.3 + (df - atk) / 150 + dtm.mods.tackle, 0.1, 0.75);
         const ctm = this.teams[c.team];
         const inBox = this.U(ctm, c.x) > L - 16.5 && Math.abs(this.V(ctm, c.y) - CY) < 20.16;
         // 박스 안에서는 수비가 신중해진다(페널티킥 남발 방지)
-        const pFoul = (0.065 + (atk > df ? 0.035 : 0) + dtm.tactic.press * 0.012) * (inBox ? 0.15 : 1);
+        const pFoul = (0.065 + (atk > df ? 0.035 : 0) + this.pressOf(dtm) * 0.012) * (inBox ? 0.15 : 1) * dtm.mods.foul;
         const r = Math.random();
         if (r < pFoul) { this._foul(d, c); return; }
         if (r < pFoul + pWin) {
@@ -919,7 +1004,7 @@
       this.subTimer -= DT;
       if (this.subTimer > 0) return;
       this.subTimer = 5;
-      if (this.t < MATCH_T * 0.58 || this.mode !== 'restart') return;
+      if (this.t < this.T * 0.58 || this.mode !== 'restart') return;
       for (const tm of this.teams) {
         if (!tm.aiSubs || tm.aiSubsDone >= 3 || tm.subsLeft <= 0) continue;
         let worst = null;
@@ -950,7 +1035,7 @@
         for (const p of tm.onPitch.concat(tm.used, tm.sentOff)) {
           const s = p.s;
           const t1 = p.t1 == null ? this.t : p.t1;
-          const mins = Math.max(1, Math.round((t1 - p.t0) / MATCH_T * 90));
+          const mins = Math.max(1, Math.round((t1 - p.t0) / this.T * 90));
           let r = 6.0 + s.goals * 1.0 + s.assists * 0.6 + s.onT * 0.12 - (s.shots - s.onT) * 0.04
             + s.passOk * 0.03 - (s.passes - s.passOk) * 0.06 + s.tackles * 0.12 + s.ints * 0.1
             + s.saves * 0.3 - s.fouls * 0.05 - s.yellow * 0.3 - s.red * 1.5;
